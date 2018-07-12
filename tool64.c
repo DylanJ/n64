@@ -43,8 +43,10 @@ typedef struct rom_s {
 
 const char   *country_str(uint8_t c);
 int           load_rom(rom_t *, char *);
+void          close_rom(rom_t);
 uint32_t      format(rom_header_t *);
 const char   *format_str(uint32_t);
+const char   *format_ext(uint32_t);
 uint32_t      clockrate(rom_header_t *);
 void          swap(uint8_t *, int, int);
 void          dwordswap(uint8_t *, int);
@@ -54,8 +56,6 @@ rom_header_t *header(FILE *);
 int           rom_size(FILE *);
 
 const char *country_str(uint8_t c) {
-	char *l;
-
 	switch(c) {
 		case 0x37:
 			return "Beta";
@@ -111,6 +111,19 @@ uint32_t format(rom_header_t* h) {
 	f |= (h->pgs2 & 0xFF);
 
 	return f;
+}
+
+const char *format_ext(uint32_t fmt) {
+	switch(fmt) {
+		case N64:
+			return "n64";
+		case V64:
+			return "v64";
+		case Z64:
+			return "z64";
+		default:
+			return "unk";
+	}
 }
 
 const char *format_str(uint32_t fmt) {
@@ -191,11 +204,12 @@ int rom_size(FILE *f) {
 
 int print_help() {
 	printf("tool64\n");
-	printf(" example: tool64 info foo.z64\n");
-	printf("\n");
+	printf("\tview n64 rom header info and convert between rom formats\n");
 	printf("options:\n");
-	printf(" info - print rom header info\n");
-	printf(" z64 - convert rom to z64 (big endian)\n");
+	printf("\tinfo src - print rom header info\n");
+	printf("\tz64 src [dst] - convert rom to z64 (big endian)\n");
+	printf("\tn64 src [dst] - convert rom to n64 (little endian)\n");
+	printf("\tv64 src [dst] - convert rom to v64 (byteswapped)\n");
 	return EXIT_SUCCESS;
 }
 
@@ -217,7 +231,6 @@ int info(int argc, char **argv) {
 
 	rom_header_t *h = rom.h;
 
-	printf("t: %x %x %x %x\n", h->lat, h->pgs1, h->pwd, h->pgs2);
 	printf("Path: %s\n", path);
 	printf("Name: %s\n", h->name);
 	printf("Region: %s (0x%x)\n", country_str(h->country_code), h->country_code);
@@ -227,6 +240,8 @@ int info(int argc, char **argv) {
 	printf("File Extension: %s\n", ext(path));
 	printf("Format: %s\n", format_str(rom.fmt));
 	printf("Size: %d\n", rom_size(rom.f));
+
+	close_rom(rom);
 
 	return EXIT_SUCCESS;
 };
@@ -240,22 +255,18 @@ int convert(int argc, char **argv, int dst_format) {
 		return EXIT_FAILURE;
 	}
 
-	char *dst_path = 0;
-	/* char *dst_format = argv[1]; */
 	char *src_path = argv[2];
-
-	if (argc > 3) {
-		dst_path = argv[3];
-	}
 
 	rom_t rom;
 	if (load_rom(&rom, src_path) != 0) {
 		printf("Error: Failed to load ROM\n");
+		close_rom(rom);
 		return EXIT_FAILURE;
 	}
 
 	if (rom.fmt == dst_format) {
 		printf("Input is already %s. Nothing to do!\n", format_str(rom.fmt));
+		close_rom(rom);
 		return EXIT_SUCCESS;
 	}
 
@@ -265,13 +276,16 @@ int convert(int argc, char **argv, int dst_format) {
 	uint8_t* data = malloc(sizeof(uint8_t) * romsize);
 	if (data == 0) {
 		printf("Error: Failed to retrieve memory\n");
+		close_rom(rom);
 		return EXIT_FAILURE;
 	}
-	memset(data, 0, sizeof(data));
+	memset(data, 0, romsize);
 
 	int l = fread(data, sizeof(uint8_t), romsize, rom.f);
 	if (l != romsize) {
 		printf("Error: Unexpected file length\n");
+		free(data);
+		close_rom(rom);
 		return EXIT_FAILURE;
 	}
 
@@ -292,9 +306,28 @@ int convert(int argc, char **argv, int dst_format) {
 		dwordswap(data, romsize);
 	}
 
-	FILE* pFile = fopen ("myfile.bin", "wb");
-	fwrite (data, sizeof(uint8_t), romsize, pFile);
-	fclose (pFile);
+	char *dst_path = malloc(sizeof(char) * strlen(src_path) + 4);
+
+	if (argc > 3) {
+		strcpy(dst_path, argv[3]);
+	} else {
+		char *fe = ext(src_path);
+		const char *dst_ext = format_ext(dst_format);
+
+		strcpy(dst_path, src_path);
+
+		int lenp = strlen(dst_path);
+		int lene = strlen(fe);
+		strcpy(dst_path + lenp - lene, dst_ext);
+	}
+
+	FILE* pFile = fopen(dst_path, "wb");
+	fwrite(data, sizeof(uint8_t), romsize, pFile);
+	fclose(pFile);
+
+	free(data);
+	free(dst_path);
+	close_rom(rom);
 
 	return EXIT_SUCCESS;
 };
@@ -307,6 +340,10 @@ void downcase(char *str) {
 	}
 };
 
+void close_rom(rom_t rom) {
+	fclose(rom.f);
+	free(rom.h);
+};
 
 int load_rom(rom_t *rom, char *path) {
 	FILE *f = fopen(path, "rb");
